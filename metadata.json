@@ -1,0 +1,6 @@
+{
+  "name": "Teknik Servis ERP",
+  "description": "Akıllı Teknik Servis, Cari ve Gelir-Gider Finans Takip ERP Paneli",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
