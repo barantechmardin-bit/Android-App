@@ -33,6 +33,15 @@ import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.PrimaryTeal
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.AccentOrange
+import com.example.ui.theme.ErrorRed
+import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import com.example.ui.viewmodel.ErpViewModel
 import com.example.ui.viewmodel.ErpViewModelFactory
 
@@ -68,16 +77,22 @@ class MainActivity : ComponentActivity() {
         // 2. Wrap database in repository with simulated Firestore sync logs
         val repository = ErpRepository(database.erpDao())
 
-        // 3. Obtain ERP ViewModel via Factory Provider
+        // 3. Obtain ERP ViewModel via Factory Provider with native persistent preferences (SharedPreferences)
+        val sharedPrefs = getSharedPreferences("erp_prefs", android.content.Context.MODE_PRIVATE)
         viewModel = ViewModelProvider(
             this,
-            ErpViewModelFactory(repository)
+            ErpViewModelFactory(repository, sharedPrefs)
         )[ErpViewModel::class.java]
 
         setContent {
             val isDarkMode by viewModel.isDarkMode.collectAsState()
             val currentTab by viewModel.currentTab.collectAsState()
             val autoNotification by viewModel.autoMessageNotification.collectAsState()
+
+            val stockAlerts by viewModel.criticalStockAlerts.collectAsState()
+            val repairAlerts by viewModel.upcomingRepairAlerts.collectAsState()
+            val totalAlerts = stockAlerts.size + repairAlerts.size
+            var showNotificationsCenter by remember { mutableStateOf(false) }
 
             MyApplicationTheme(darkTheme = isDarkMode) {
                 Surface(
@@ -90,7 +105,11 @@ class MainActivity : ComponentActivity() {
                         if (isTablet) {
                             // LARGE SCREEN (Masaüstü Sürüm): Top Titlebar + Left menu, right workspace
                             Column(modifier = Modifier.fillMaxSize()) {
-                                DesktopSimulatedTitleBar(viewModel)
+                                DesktopSimulatedTitleBar(
+                                    viewModel = viewModel,
+                                    totalAlertsCount = totalAlerts,
+                                    onNotificationClick = { showNotificationsCenter = true }
+                                )
                                 
                                 Row(
                                     modifier = Modifier
@@ -121,7 +140,9 @@ class MainActivity : ComponentActivity() {
                                     MobileTopBar(
                                         currentTabName = currentTab,
                                         isDarkMode = isDarkMode,
-                                        onThemeToggle = { viewModel.toggleTheme() }
+                                        onThemeToggle = { viewModel.toggleTheme() },
+                                        totalAlertsCount = totalAlerts,
+                                        onNotificationClick = { showNotificationsCenter = true }
                                     )
                                 },
                                 bottomBar = {
@@ -139,6 +160,16 @@ class MainActivity : ComponentActivity() {
                                     ActiveScreenContent(tabName = currentTab, viewModel = viewModel)
                                 }
                             }
+                        }
+
+                        if (showNotificationsCenter) {
+                            NotificationsCenterDialog(
+                                onDismiss = { showNotificationsCenter = false },
+                                stockAlerts = stockAlerts,
+                                repairAlerts = repairAlerts,
+                                onAddStokClick = { viewModel.selectTab("STOCK") },
+                                onGoToJobsClick = { viewModel.selectTab("JOB_BOARD") }
+                            )
                         }
 
                         // WhatsApp / Telegram message notification banner overlay
@@ -165,7 +196,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun DesktopSimulatedTitleBar(viewModel: ErpViewModel) {
+fun DesktopSimulatedTitleBar(
+    viewModel: ErpViewModel,
+    totalAlertsCount: Int,
+    onNotificationClick: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -244,6 +279,34 @@ fun DesktopSimulatedTitleBar(viewModel: ErpViewModel) {
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Notifications badge inside top title bar
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (totalAlertsCount > 0) ErrorRed.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
+                    .clickable { onNotificationClick() }
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .testTag("desktop_nav_bell_trigger")
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (totalAlertsCount > 0) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
+                        contentDescription = "Desktop Bell Icon",
+                        tint = if (totalAlertsCount > 0) ErrorRed else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        text = "Bildirimler ($totalAlertsCount)",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (totalAlertsCount > 0) ErrorRed else MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
             Row(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -482,7 +545,13 @@ fun LeftSidebarMenu(
 // Mobile top scaffold header
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MobileTopBar(currentTabName: String, isDarkMode: Boolean, onThemeToggle: () -> Unit) {
+fun MobileTopBar(
+    currentTabName: String,
+    isDarkMode: Boolean,
+    onThemeToggle: () -> Unit,
+    totalAlertsCount: Int,
+    onNotificationClick: () -> Unit
+) {
     val cleanName = when (currentTabName) {
         "DASHBOARD" -> "Dashboard ERP"
         "CARI" -> "Cari Kartlar"
@@ -502,6 +571,36 @@ fun MobileTopBar(currentTabName: String, isDarkMode: Boolean, onThemeToggle: () 
             )
         },
         actions = {
+            IconButton(
+                onClick = onNotificationClick,
+                modifier = Modifier.testTag("mobile_bell_button")
+            ) {
+                Box {
+                    Icon(
+                        imageVector = if (totalAlertsCount > 0) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
+                        contentDescription = "Notifications bell",
+                        tint = if (totalAlertsCount > 0) ErrorRed else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (totalAlertsCount > 0) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = 1.dp, y = (-1).dp)
+                                .size(14.dp)
+                                .clip(CircleShape)
+                                .background(ErrorRed),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = totalAlertsCount.toString(),
+                                fontSize = 8.sp,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
             IconButton(
                 onClick = onThemeToggle,
                 modifier = Modifier.testTag("mobile_toggle_dark_mode")
@@ -617,3 +716,194 @@ data class NavigationMenuItem(
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
     val testTag: String
 )
+
+@Composable
+fun NotificationsCenterDialog(
+    onDismiss: () -> Unit,
+    stockAlerts: List<String>,
+    repairAlerts: List<String>,
+    onAddStokClick: () -> Unit,
+    onGoToJobsClick: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp)
+                .testTag("notifications_center_dialog"),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Title Area
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.NotificationsActive,
+                            contentDescription = "Notification Bell Big",
+                            tint = AccentOrange,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Text(
+                            text = "Dükkan Bildirim Merkezi",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Filled.Close, contentDescription = "Kapat")
+                    }
+                }
+
+                Text(
+                    text = "SLA süre sınırını aşan onarımlar ve kritik düzeye düşen yedek parça stokları derlenmiştir.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .heightIn(max = 350.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Category 1: SLA Alerts
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Filled.Timer, contentDescription = "Repair SLA timer", tint = AccentOrange, modifier = Modifier.size(16.dp))
+                            Text(
+                                "🛠️ Geciken Onarım Uyarıları (${repairAlerts.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Black,
+                                color = AccentOrange
+                            )
+                        }
+
+                        if (repairAlerts.isEmpty()) {
+                            Text(
+                                "✅ Harika! 12 saat sınırını aşan veya bekleyen kritik cihaz bulunmuyor.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SuccessGreen,
+                                modifier = Modifier.padding(start = 6.dp)
+                            )
+                        } else {
+                            repairAlerts.forEach { alert ->
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = AccentOrange.copy(alpha = 0.08f)),
+                                    border = BorderStroke(0.8.dp, AccentOrange.copy(alpha = 0.3f)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = alert,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(10.dp),
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Category 2: Stock levels
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Filled.Warehouse, contentDescription = "Stock warning", tint = ErrorRed, modifier = Modifier.size(16.dp))
+                            Text(
+                                "📦 Kritik Stok Seviyesi Uyarıları (${stockAlerts.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Black,
+                                color = ErrorRed
+                            )
+                        }
+
+                        if (stockAlerts.isEmpty()) {
+                            Text(
+                                "✅ Tüm kritik yedek parça stok adetleri güvende.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SuccessGreen,
+                                modifier = Modifier.padding(start = 6.dp)
+                            )
+                        } else {
+                            stockAlerts.forEach { alert ->
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = ErrorRed.copy(alpha = 0.06f)),
+                                    border = BorderStroke(0.8.dp, ErrorRed.copy(alpha = 0.25f)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = alert,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(10.dp),
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+
+                // Action Footer Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (stockAlerts.isNotEmpty()) {
+                        Button(
+                            onClick = {
+                                onAddStokClick()
+                                onDismiss()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                            modifier = Modifier.weight(1f).height(40.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("Stok Siparişi Ver", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            onGoToJobsClick()
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                        modifier = Modifier.weight(1.1f).height(40.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("Onarımlara Git", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    }
+                }
+            }
+        }
+    }
+}

@@ -10,14 +10,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.util.Locale
 
-class ErpViewModel(private val repository: ErpRepository) : ViewModel() {
+class ErpViewModel(
+    private val repository: ErpRepository,
+    private val sharedPrefs: android.content.SharedPreferences
+) : ViewModel() {
 
-    // Active Navigation Tab: "DASHBOARD", "CARI", "JOB_BOARD", "OPERATIONS", "STOCK", "LEDGER", "SETTINGS"
-    private val _currentTab = MutableStateFlow("DASHBOARD")
+    // Active Navigation Tab preserved via SharedPreferences (analogous to localStorage)
+    private val _currentTab = MutableStateFlow(sharedPrefs.getString("current_tab", "DASHBOARD") ?: "DASHBOARD")
     val currentTab: StateFlow<String> = _currentTab.asStateFlow()
 
     fun selectTab(tab: String) {
         _currentTab.value = tab
+        sharedPrefs.edit().putString("current_tab", tab).apply()
     }
 
     // Barcode Search state mapping for USB scanner and direct search
@@ -28,15 +32,18 @@ class ErpViewModel(private val repository: ErpRepository) : ViewModel() {
         _barcodeSearchQuery.value = query
         if (query.isNotEmpty()) {
             _currentTab.value = "DASHBOARD"
+            sharedPrefs.edit().putString("current_tab", "DASHBOARD").apply()
         }
     }
 
-    // Modern Dark Mode toggler state
-    private val _isDarkMode = MutableStateFlow(true) // Dark Mode by default as requested
+    // Modern Dark Mode toggler state preserved via SharedPreferences
+    private val _isDarkMode = MutableStateFlow(sharedPrefs.getBoolean("is_dark_mode", true)) // Dark Mode by default
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
 
     fun toggleTheme() {
-        _isDarkMode.update { !it }
+        val nextVal = !_isDarkMode.value
+        _isDarkMode.value = nextVal
+        sharedPrefs.edit().putBoolean("is_dark_mode", nextVal).apply()
     }
 
     // Read reactive streams from Repository
@@ -81,6 +88,24 @@ class ErpViewModel(private val repository: ErpRepository) : ViewModel() {
         .map { list ->
             list.filter { it.adet < 3 }.map { 
                 "Kritik Stok! '${it.parcaAdi}' adedi ${it.adet} adete düştü. En uygun tedarikçi [${it.tedarikciIsim}] üzerinden sipariş verilmesi öneriliyor!"
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Dynamic AI Repair Delay/Due Date Warnings State: alert when active repair duration exceeds 12 hours
+    val upcomingRepairAlerts: StateFlow<List<String>> = servisList
+        .map { list ->
+            list.filter { it.durum != "Teslim Edildi" }.mapNotNull { 
+                val elapsedMs = System.currentTimeMillis() - it.tarih
+                val elapsedHours = elapsedMs / (1000 * 60 * 60)
+                if (elapsedHours >= 12) {
+                    val formattedTime = if (elapsedHours >= 24) {
+                        "${elapsedHours / 24} gün ${elapsedHours % 24} saat"
+                    } else {
+                        "$elapsedHours saat"
+                    }
+                    "Süre Uyarısı! ${it.cariIsim} - '${it.cihazMarkaModel}' tamir aşaması '${it.durum}' durumunda $formattedTime süredir bekliyor."
+                } else null
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -156,6 +181,12 @@ class ErpViewModel(private val repository: ErpRepository) : ViewModel() {
         }
     }
 
+    fun updateServisRecord(servis: ServisKayit) {
+        viewModelScope.launch {
+            repository.updateServis(servis)
+        }
+    }
+
     fun deleteServisKaydi(servis: ServisKayit) {
         viewModelScope.launch {
             repository.deleteServis(servis)
@@ -193,6 +224,12 @@ class ErpViewModel(private val repository: ErpRepository) : ViewModel() {
         viewModelScope.launch {
             val updated = stok.copy(adet = yeniAdet.coerceAtLeast(0))
             repository.updateStok(updated)
+        }
+    }
+
+    fun updateStokRecord(stok: StokParca) {
+        viewModelScope.launch {
+            repository.updateStok(stok)
         }
     }
 
@@ -258,12 +295,15 @@ class ErpViewModel(private val repository: ErpRepository) : ViewModel() {
     }
 }
 
-// ViewModel factory to inject Repository dependency
-class ErpViewModelFactory(private val repository: ErpRepository) : ViewModelProvider.Factory {
+// ViewModel factory to inject Repository and SharedPreferences dependencies
+class ErpViewModelFactory(
+    private val repository: ErpRepository,
+    private val sharedPrefs: android.content.SharedPreferences
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(ErpViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return ErpViewModel(repository) as T
+            return ErpViewModel(repository, sharedPrefs) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

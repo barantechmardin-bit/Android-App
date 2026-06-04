@@ -19,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalFocusManager
@@ -35,6 +36,12 @@ import com.example.ui.viewmodel.ErpViewModel
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.*
+import android.print.PrintAttributes
+import android.print.PrintManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.content.Context
+import android.app.Activity
 
 // Formatted double helper
 fun Double.formatTL(): String {
@@ -47,6 +54,38 @@ fun Long.formatDate(): String {
     return sdf.format(Date(this))
 }
 
+fun Context.findActivity(): Activity? {
+    var ctx = this
+    while (ctx is android.content.ContextWrapper) {
+        if (ctx is Activity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
+}
+
+fun printHtmlReport(context: Context, htmlContent: String) {
+    val activity = context.findActivity()
+    activity?.runOnUiThread {
+        val webView = WebView(context)
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String) {
+                val printManager = context.getSystemService(Context.PRINT_SERVICE) as? PrintManager
+                if (printManager != null) {
+                    val jobName = "BARANTECH_ERP_RAPORU_${System.currentTimeMillis()}"
+                    val printAdapter = webView.createPrintDocumentAdapter(jobName)
+                    val attributes = PrintAttributes.Builder()
+                        .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                        .setResolution(PrintAttributes.Resolution("pdf", "pdf", 300, 300))
+                        .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                        .build()
+                    printManager.print(jobName, printAdapter, attributes)
+                }
+            }
+        }
+        webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
+    }
+}
+
 // 1. DASHBOARD SCREEN
 @Composable
 fun DashboardScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
@@ -55,7 +94,12 @@ fun DashboardScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
     val logs by viewModel.syncLogs.collectAsState()
     val isSyncInProgress by viewModel.syncInProgress.collectAsState()
 
+    val criticalStockAlerts by viewModel.criticalStockAlerts.collectAsState()
+    val upcomingRepairAlerts by viewModel.upcomingRepairAlerts.collectAsState()
+    val totalAlertsCount = criticalStockAlerts.size + upcomingRepairAlerts.size
+
     val barcodeQuery by viewModel.barcodeSearchQuery.collectAsState()
+    var showExecutiveReport by remember { mutableStateOf(false) }
 
     // Calculate count for counters
     val countBekliyor = servisList.count { it.durum == "Bekliyor" }
@@ -130,6 +174,137 @@ fun DashboardScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
                             )
                         }
                     }
+                }
+            }
+        }
+
+        // Real-Time System Notification & Warning alert board widget
+        if (totalAlertsCount > 0) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("dashboard_notification_center_banner"),
+                    colors = CardDefaults.cardColors(containerColor = AccentOrange.copy(alpha = 0.08f)),
+                    border = BorderStroke(1.2.dp, AccentOrange.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Warning,
+                                    contentDescription = "Alert Warning",
+                                    tint = AccentOrange,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = "Aktif Sistem Uyarıları ($totalAlertsCount)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = AccentOrange
+                                )
+                            }
+                            
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(AccentOrange.copy(alpha = 0.15f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "MÜDAHALE GEREKİYOR",
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = AccentOrange
+                                )
+                            }
+                        }
+                        
+                        Divider(color = AccentOrange.copy(alpha = 0.2f))
+                        
+                        // Show combined stock alerts + upcoming repair delays in a smart scroll free sequence
+                        val allAlerts = upcomingRepairAlerts.map { "🛠️ $it" } + criticalStockAlerts.map { "📦 $it" }
+                        allAlerts.take(4).forEach { alertMsg ->
+                            Text(
+                                text = "• $alertMsg",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 2
+                            )
+                        }
+                        
+                        if (allAlerts.size > 4) {
+                            Text(
+                                text = "...ve ${allAlerts.size - 4} adet aktif sistem uyarısı daha mevcut. Çözüm/detaylar için üst bardaki zil simgesine dokunun.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Trigger button card for Executive Summary & Reporting
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showExecutiveReport = true }
+                    .testTag("executive_report_trigger_card"),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)),
+                border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Assessment,
+                            contentDescription = "Rapor Modulu",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Yönetici Özet Raporu & PDF",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Dükkan mali verilerini, aktif onarımları ve müşteri bakiyelerini kapsayan şık bir PDF raporu oluşturup yazdırın.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Filled.ChevronRight,
+                        contentDescription = "Rapor Detay",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
         }
@@ -487,6 +662,13 @@ fun DashboardScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
             }
         }
     }
+
+    if (showExecutiveReport) {
+        ExecutiveSummaryReportDialog(
+            onDismiss = { showExecutiveReport = false },
+            viewModel = viewModel
+        )
+    }
 }
 
 @Composable
@@ -562,11 +744,694 @@ fun FinancialBarChart(gelir: Float, gider: Float) {
     }
 }
 
+data class MonthlyTotal(
+    val monthName: String,
+    val year: Int,
+    val monthInt: Int,
+    val income: Float,
+    val expense: Float
+)
+
+fun getMonthlyTotals(finansList: List<KasaBanka>): List<MonthlyTotal> {
+    val months = listOf("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")
+    val cal = java.util.Calendar.getInstance()
+    
+    val grouped = finansList.groupBy {
+        cal.timeInMillis = it.tarih
+        val year = cal.get(java.util.Calendar.YEAR)
+        val month = cal.get(java.util.Calendar.MONTH) // 0-11
+        year to month
+    }
+    
+    val sortedKeys = grouped.keys.sortedWith(compareBy<Pair<Int, Int>> { it.first }.thenBy { it.second })
+    
+    val result = sortedKeys.map { (year, monthInt) ->
+        val list = grouped[year to monthInt] ?: emptyList()
+        val totalIncome = list.filter { it.tipi == "Gelir" }.sumOf { it.tutar }.toFloat()
+        val totalExpense = list.filter { it.tipi == "Gider" }.sumOf { it.tutar }.toFloat()
+        val yearSuffix = year.toString().takeLast(2)
+        val label = "${months[monthInt]} '$yearSuffix"
+        
+        MonthlyTotal(
+            monthName = label,
+            year = year,
+            monthInt = monthInt,
+            income = totalIncome,
+            expense = totalExpense
+        )
+    }
+    
+    if (result.isEmpty()) {
+        cal.timeInMillis = System.currentTimeMillis()
+        val currentYear = cal.get(java.util.Calendar.YEAR)
+        val currentMonth = cal.get(java.util.Calendar.MONTH)
+        val yearSuffix = currentYear.toString().takeLast(2)
+        val label = "${months[currentMonth]} '$yearSuffix"
+        return listOf(MonthlyTotal(label, currentYear, currentMonth, 0f, 0f))
+    }
+    
+    return result
+}
+
+@Composable
+fun MonthlyFinancialBarChart(finansList: List<KasaBanka>) {
+    val monthlyData = remember(finansList) { getMonthlyTotals(finansList) }
+    
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Aylık Gelir ve Gider Analizi",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Dönemsel finansal büyüme ve maliyet karşılaştırması",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                // Legends indicators
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(SuccessGreen))
+                        Text("Gelir", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(ErrorRed))
+                        Text("Gider", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            
+            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
+            
+            // The Canvas drawing area
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+                    // The Chart Bars
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val canvasWidth = size.width
+                            val canvasHeight = size.height
+                            
+                            val bottomPadding = 4.dp.toPx()
+                            val topPadding = 12.dp.toPx()
+                            val chartHeight = canvasHeight - bottomPadding - topPadding
+                            
+                            // Determine the max amount among all monthly income and expense values to scale properly
+                            val maxAmount = monthlyData.flatMap { listOf(it.income, it.expense) }
+                                .maxOrNull()?.coerceAtLeast(100f) ?: 100f
+                            
+                            val count = monthlyData.size
+                            val sectionWidth = canvasWidth / count
+                            
+                            monthlyData.forEachIndexed { index, data ->
+                                val sectionLeft = index * sectionWidth
+                                val barWidth = sectionWidth * 0.28f
+                                val gap = sectionWidth * 0.06f
+                                
+                                val sectionCenterX = sectionLeft + sectionWidth / 2
+                                val incomeBarLeft = sectionCenterX - barWidth - (gap / 2)
+                                val expenseBarLeft = sectionCenterX + (gap / 2)
+                                
+                                val incomeHeight = (data.income / maxAmount) * chartHeight
+                                val expenseHeight = (data.expense / maxAmount) * chartHeight
+                                
+                                val yBaseline = canvasHeight - bottomPadding
+                                
+                                // 1. Draw Income Bar (SuccessGreen)
+                                if (incomeHeight > 0) {
+                                    drawRoundRect(
+                                        color = SuccessGreen,
+                                        topLeft = Offset(incomeBarLeft, yBaseline - incomeHeight),
+                                        size = Size(barWidth, incomeHeight),
+                                        cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                                    )
+                                } else {
+                                    drawCircle(
+                                        color = SuccessGreen.copy(alpha = 0.3f),
+                                        center = Offset(incomeBarLeft + barWidth / 2, yBaseline - 2.dp.toPx()),
+                                        radius = 2.dp.toPx()
+                                    )
+                                }
+                                
+                                // 2. Draw Expense Bar (ErrorRed)
+                                if (expenseHeight > 0) {
+                                    drawRoundRect(
+                                        color = ErrorRed,
+                                        topLeft = Offset(expenseBarLeft, yBaseline - expenseHeight),
+                                        size = Size(barWidth, expenseHeight),
+                                        cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                                    )
+                                } else {
+                                    drawCircle(
+                                        color = ErrorRed.copy(alpha = 0.3f),
+                                        center = Offset(expenseBarLeft + barWidth / 2, yBaseline - 2.dp.toPx()),
+                                        radius = 2.dp.toPx()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(6.dp))
+                    
+                    // Monthly labels exactly positioned matching columns
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        monthlyData.forEach { data ->
+                            Text(
+                                text = data.monthName,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(2.dp))
+            
+            // Detailed list of figures per month
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                monthlyData.forEach { data ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        modifier = Modifier.widthIn(min = 110.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(data.monthName, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+                            Text("+ ${data.income.toDouble().formatTL()}", style = MaterialTheme.typography.bodySmall, color = SuccessGreen, fontWeight = FontWeight.Black)
+                            Text("- ${data.expense.toDouble().formatTL()}", style = MaterialTheme.typography.bodySmall, color = ErrorRed, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun ExecutiveSummaryReportDialog(
+    onDismiss: () -> Unit,
+    viewModel: ErpViewModel
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+    
+    val servisList by viewModel.servisList.collectAsState()
+    val finansList by viewModel.finansList.collectAsState()
+    val cariList by viewModel.cariList.collectAsState()
+    
+    // Stats calculation
+    val countBekliyor = servisList.count { it.durum == "Bekliyor" }
+    val countTamirde = servisList.count { it.durum == "Tamirde" }
+    val countParca = servisList.count { it.durum == "Parça Bekliyor" }
+    val countTeslim = servisList.count { it.durum == "Teslim Edildi" }
+    val countTotalJobs = servisList.size
+    
+    val totalGelir = finansList.filter { it.tipi == "Gelir" }.sumOf { it.tutar }
+    val totalGider = finansList.filter { it.tipi == "Gider" }.sumOf { it.tutar }
+    val netKasa = totalGelir - totalGider
+    
+    val posGelir = finansList.filter { it.tipi == "Gelir" && it.odemeYontemi == "POS" }.sumOf { it.tutar }
+    val posGider = finansList.filter { it.tipi == "Gider" && it.odemeYontemi == "POS" }.sumOf { it.tutar }
+    val posNet = posGelir - posGider
+    
+    val nakitGelir = finansList.filter { it.tipi == "Gelir" && it.odemeYontemi == "Nakit" }.sumOf { it.tutar }
+    val nakitGider = finansList.filter { it.tipi == "Gider" && it.odemeYontemi == "Nakit" }.sumOf { it.tutar }
+    val nakitNet = nakitGelir - nakitGider
+    
+    val totalCariCount = cariList.size
+    val totalBakiye = cariList.sumOf { it.bakiye }
+    
+    val dateStr = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date())
+    
+    val reportHtml = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>BaranTech ERP Summary Report</title>
+            <style>
+                body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #2D3748; margin: 40px; padding: 0; line-height: 1.6; background-color: #FFF; }
+                .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #14B8A6; padding-bottom: 15px; margin-bottom: 30px; }
+                .title { margin: 0; font-size: 24px; font-weight: bold; color: #0F766E; }
+                .subtitle { font-size: 13px; color: #64748B; margin-top: 5px; }
+                .date { font-size: 13px; color: #334155; font-weight: bold; text-align: right; }
+                .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 30px; }
+                .card { border: 1px solid #E2E8F0; border-radius: 8px; padding: 16px; background: #F8FAFC; }
+                .card-title { font-size: 11px; font-weight: bold; text-transform: uppercase; color: #64748B; margin: 0 0 6px 0; }
+                .card-value { font-size: 20px; font-weight: bold; margin: 0; color: #1E293B; }
+                .text-green { color: #10B981 !important; }
+                .text-red { color: #EF4444 !important; }
+                .text-blue { color: #0EA5E9 !important; }
+                .section-title { font-size: 16px; font-weight: bold; color: #0F766E; border-bottom: 2px solid #E2E8F0; padding-bottom: 6px; margin-bottom: 15px; margin-top: 30px; }
+                table { width: 100%; border-collapse: collapse; margin-bottom: 25px; }
+                th, td { padding: 10px 12px; border-bottom: 1px solid #E2E8F0; text-align: left; font-size: 13px; }
+                th { background-color: #F1F5F9; color: #475569; font-weight: bold; }
+                tr:nth-child(even) { background-color: #F8FAFC; }
+                .footer { text-align: center; margin-top: 50px; font-size: 11px; color: #94A3B8; border-top: 1px solid #E2E8F0; padding-top: 15px; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <div>
+                    <h1 class="title">BARANTECH ERP GENEL ÖZET RAPORU</h1>
+                    <p class="subtitle">Teknik Servis Onarım ve Finans Durum Raporu</p>
+                </div>
+                <div class="date">Oluşturma Tarihi<br>${dateStr}</div>
+            </div>
+
+            <div class="summary-grid">
+                <div class="card" style="border-left: 4px solid #0EA5E9;">
+                    <h3 class="card-title">Net Kasa Durumu</h3>
+                    <p class="card-value ${if (netKasa >= 0) "text-green" else "text-red"}">${netKasa.formatTL()}</p>
+                </div>
+                <div class="card" style="border-left: 4px solid #10B981;">
+                    <h3 class="card-title">Toplam Gelir (Ciro)</h3>
+                    <p class="card-value text-green">${totalGelir.formatTL()}</p>
+                </div>
+                <div class="card" style="border-left: 4px solid #EF4444;">
+                    <h3 class="card-title">Toplam Giderler</h3>
+                    <p class="card-value text-red">${totalGider.formatTL()}</p>
+                </div>
+            </div>
+
+            <h2 class="section-title">Finansal Dağılım</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Ödeme Kanalı</th>
+                        <th>Gelir / Giriş</th>
+                        <th>Gider / Çıkış</th>
+                        <th>Net Bakiye</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><b>Nakit Kasası</b></td>
+                        <td class="text-green">${nakitGelir.formatTL()}</td>
+                        <td class="text-red">${nakitGider.formatTL()}</td>
+                        <td style="font-weight: bold;" class="${if (nakitNet >= 0) "text-green" else "text-red"}">${nakitNet.formatTL()}</td>
+                    </tr>
+                    <tr>
+                        <td><b>POS Cihazı / Banka</b></td>
+                        <td class="text-green">${posGelir.formatTL()}</td>
+                        <td class="text-red">${posGider.formatTL()}</td>
+                        <td style="font-weight: bold;" class="${if (posNet >= 0) "text-green" else "text-red"}">${posNet.formatTL()}</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h2 class="section-title">Teknik Servis Onarım Faaliyetleri</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Cihaz Onarım Durumu</th>
+                        <th>Cihaz Adedi</th>
+                        <th>Alt Detay ve Açıklamalar</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><b>Bekliyor / Arıza Tespiti Yapılan</b></td>
+                        <td>${countBekliyor} Adet</td>
+                        <td>Onay veya inceleme bekleyen aktif iş sırası.</td>
+                    </tr>
+                    <tr>
+                        <td><b>Onarım Aşamasında (Tamirde)</b></td>
+                        <td>${countTamirde} Adet</td>
+                        <td>Teknisyen masasında işlem gören cihazlar.</td>
+                    </tr>
+                    <tr>
+                        <td><b>Yedek Parça Bekleniyor</b></td>
+                        <td>${countParca} Adet</td>
+                        <td>Yurt dışı/içi parça temini bekleyen servisler.</td>
+                    </tr>
+                    <tr>
+                        <td><b>Müşteriye Teslim Edildi</b></td>
+                        <td>${countTeslim} Adet</td>
+                        <td>Tamamlanan ve arşivlenen geçmiş operasyonlar.</td>
+                    </tr>
+                    <tr style="background-color: #E2E8F0; font-weight: bold;">
+                        <td>GENEL TOPLAM REGİSTRE CİHAZ</td>
+                        <td>${countTotalJobs} Cihaz</td>
+                        <td>Sistemdeki tüm zamanların toplam kayıt yükü.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h2 class="section-title">Müşteriler (Cari) ve Stok Sağlık Durumu</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Gösterge Bölümü</th>
+                        <th>Veri Ölçümü</th>
+                        <th>Dükkan Etki Değerlendirmesi</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Kayıtlı Aktif Cari Sayısı</td>
+                        <td>${totalCariCount} Cari Kart</td>
+                        <td>Sisteme kayıt edilmiş benzersiz müşteri/kurum sayısı.</td>
+                    </tr>
+                    <tr>
+                        <td>Toplam Cari Bakiye Yükü</td>
+                        <td class="${if (totalBakiye >= 0) "text-green" else "text-red"}">${totalBakiye.formatTL()}</td>
+                        <td>Müşterilerin dükkana olan toplam borç veya avans durum dengesi.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="footer">
+                BaranTech Bilişim ERP Sistemleri Otomatik Özet Raporlama Modülü.<br>
+                Rapordaki veriler sisteme bağlı yerel ve bulut veritabanlarının tam anlık kesitidir.
+            </div>
+        </body>
+        </html>
+    """.trimIndent()
+
+    val reportTextPlaintxt = """
+        ==================================================
+        BARANTECH ERP GENEL ÖZET RAPORU
+        Tarih: $dateStr
+        ==================================================
+        
+        [FİNANSAL GÖSTERGELER]
+        Toplam Gelir (Ciro) : ${totalGelir.formatTL()}
+        Toplam Giderler     : ${totalGider.formatTL()}
+        Net Kasa Bakiye     : ${netKasa.formatTL()}
+        
+        -- Ödeme Yöntemi Detayları --
+        Nakit Kasası Giriş  : ${nakitGelir.formatTL()}
+        Nakit Kasası Çıkış  : ${nakitGider.formatTL()}
+        Nakit Net Durum     : ${nakitNet.formatTL()}
+        
+        POS Girişleri       : ${posGelir.formatTL()}
+        POS Çıkışları       : ${posGider.formatTL()}
+        POS Net Durum       : ${posNet.formatTL()}
+        
+        [TEKNİK SERVİS FAALİYETLERİ]
+        Bekleyen Cihaz      : $countBekliyor Adet
+        Tamirdeki Cihaz     : $countTamirde Adet
+        Doğrulanan Teslimat : $countTeslim Adet
+        Parça Bekleyen      : $countParca Adet
+        Toplam Servis Kaydı : $countTotalJobs Adet
+        
+        [CARI ILISKILER]
+        Kayıtlı Cari Sayısı : $totalCariCount Kart
+        Net cari Alacak/Borç: ${totalBakiye.formatTL()}
+        
+        ==================================================
+        BaranTech Bilişim ERP Yönetim Raporlama Modülü.
+    """.trimIndent()
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.85f)
+                .padding(12.dp)
+                .testTag("executive_summary_report_dialog"),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Header Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Assessment,
+                            contentDescription = "Report Dialog Icon",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Text(
+                            text = "Yönetici Özet Raporu",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close Rapor")
+                    }
+                }
+                
+                Text(
+                    text = "Dükkanınızdaki finansal verileri ve onarım geçmişini kullanarak derlenmiş canlı analiz belgesidir.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+
+                // Scrollable content showing on-screen visual tables
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // Finans Card
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("💰 FİNANSAL GÖSTERGELER", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+                            
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Toplam Ciro:", style = MaterialTheme.typography.bodySmall)
+                                Text(totalGelir.formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = SuccessGreen)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Toplam Giderler:", style = MaterialTheme.typography.bodySmall)
+                                Text(totalGider.formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = ErrorRed)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Net Kasa Rezervi:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Text(netKasa.formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Black, color = if (netKasa >= 0) SuccessGreen else ErrorRed)
+                            }
+                        }
+                    }
+
+                    // Onarım Card
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("🛠️ TEKNİK SERVİS DURUMU", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+                            
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Bekleyen Cihaz:", style = MaterialTheme.typography.bodySmall)
+                                Text("$countBekliyor Adet", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Tamirde Olan Cihaz:", style = MaterialTheme.typography.bodySmall)
+                                Text("$countTamirde Adet", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Parça Bekleyen Cihaz:", style = MaterialTheme.typography.bodySmall)
+                                Text("$countParca Adet", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Teslim Edilen Cihaz:", style = MaterialTheme.typography.bodySmall)
+                                Text("$countTeslim Adet", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = SuccessGreen)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Toplam Servis Kaydı:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Text("$countTotalJobs Adet", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Cari Card
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth(),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("👥 CARİ İLİŞKİLER VE STOK", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+                            
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Kayıtlı Cari Sayısı:", style = MaterialTheme.typography.bodySmall)
+                                Text("$totalCariCount Müşteri", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Cari Bakiye Yükü:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Text(totalBakiye.formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = if (totalBakiye >= 0) SuccessGreen else ErrorRed)
+                            }
+                        }
+                    }
+
+                    // Monospace preview area for easy readout
+                    Text("Metin Formatı Önizleme:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(150.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f))
+                            .border(BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)))
+                            .padding(8.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            text = reportTextPlaintxt,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+
+                // Bottom CTA controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Copy to Clipboard
+                    Button(
+                        onClick = {
+                            clipboardManager.setText(androidx.compose.ui.text.buildAnnotatedString { append(reportTextPlaintxt) })
+                            viewModel.triggerBarcodeScanNotification("📋 ERP Özet Raporu metin formatında başarıyla panoya kopyalandı!")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        modifier = Modifier.weight(1f).height(44.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "Kopyala", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Kopyala", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                    }
+
+                    // Print/PDF trigger
+                    Button(
+                        onClick = {
+                            printHtmlReport(context, reportHtml)
+                            viewModel.triggerBarcodeScanNotification("🖨️ Android Yazdırma Servisi: Rapor derlendi ve PDF çıktısı hazırlanıyor!")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.weight(1.3f).height(44.dp).testTag("dialog_print_pdf_button"),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Icon(Icons.Filled.LocalPrintshop, contentDescription = "Yazdir PDF", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("PDF Kaydet / Yazdır", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 // Helper tool to bypass image resource loader
 @Composable
 fun Icon(imageOf: androidx.compose.ui.graphics.vector.ImageVector, contentDescription: String, tint: Color) {
     Icon(imageVector = imageOf, contentDescription = contentDescription, tint = tint)
+}
+
+@Composable
+fun DeleteConfirmationDialog(
+    title: String,
+    message: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) },
+        text = { Text(text = message, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text("Evet, Sil", color = MaterialTheme.colorScheme.onError, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Vazgeç", fontWeight = FontWeight.Medium)
+            }
+        },
+        shape = RoundedCornerShape(16.dp),
+        containerColor = MaterialTheme.colorScheme.surface
+    )
 }
 
 
@@ -576,6 +1441,7 @@ fun CariScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
     val cariList by viewModel.cariList.collectAsState()
     val servisList by viewModel.servisList.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
+    var itemToDelete by remember { mutableStateOf<com.example.data.model.Cari?>(null) }
 
     // Form inputs state
     var adSoyad by remember { mutableStateOf("") }
@@ -835,8 +1701,8 @@ fun CariScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
                                     fontWeight = FontWeight.Bold
                                 )
                             }
-                            IconButton(onClick = { viewModel.deleteCari(client) }) {
-                                Icon(Icons.Filled.Delete, contentDescription = "Sil", tint = ErrorRed)
+                            IconButton(onClick = { itemToDelete = client }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Sil/Delete Card", tint = ErrorRed)
                             }
                         }
 
@@ -851,6 +1717,37 @@ fun CariScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
                             TableRowLabel(label = "Vergi Dairesi:", value = client.vergiDairesi.ifBlank { "Bireysel/Girilmemiş" })
                             TableRowLabel(label = "Web Sitesi:", value = client.webSitesi.ifBlank { "Mevcut Değil" })
                             TableRowLabel(label = "IBAN:", value = client.iban.ifBlank { "Girilmemiş" })
+                            
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Güncel Cari Bakiye:",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                val balanceColor = when {
+                                    client.bakiye > 0 -> SuccessGreen
+                                    client.bakiye < 0 -> ErrorRed
+                                    else -> Color.Gray
+                                }
+                                val balanceText = when {
+                                    client.bakiye > 0 -> "+${client.bakiye.formatTL()} (Ön Ödeme/Alacak)"
+                                    client.bakiye < 0 -> "${client.bakiye.formatTL()} (Borç/Bakiye)"
+                                    else -> "0,00 TL"
+                                }
+                                Text(
+                                    text = balanceText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Black,
+                                    color = balanceColor
+                                )
+                            }
+                            
                             if (client.ozelNotlar.isNotBlank()) {
                                 TableRowLabel(label = "Özel Not:", value = client.ozelNotlar)
                             }
@@ -923,6 +1820,20 @@ fun CariScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
                 }
             }
         }
+    }
+
+    itemToDelete?.let { client ->
+        DeleteConfirmationDialog(
+            title = "Cari Kartı Sil",
+            message = "${client.adSoyadFirma} isimli cari kart silinecektir. Bu işlem geri alınamaz!",
+            onConfirm = {
+                viewModel.deleteCari(client)
+                itemToDelete = null
+            },
+            onDismiss = {
+                itemToDelete = null
+            }
+        )
     }
 }
 
@@ -1254,54 +2165,343 @@ fun ServisScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
             }
         } else {
             items(deliveredJobs) { job ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                DeliveredJobItemCard(job = job, viewModel = viewModel)
+            }
+        }
+    }
+}
+
+@Composable
+fun DeliveredJobItemCard(job: ServisKayit, viewModel: ErpViewModel) {
+    var showEditDialog by remember { mutableStateOf(false) }
+    var showQuickStatusMenu by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    if (showEditDialog) {
+        EditServisDialog(
+            job = job,
+            onDismiss = { showEditDialog = false },
+            viewModel = viewModel
+        )
+    }
+
+    if (showDeleteConfirm) {
+        DeleteConfirmationDialog(
+            title = "Onarım Arşivini Sil",
+            message = "${job.cihazMarkaModel} (${if (job.seriNo.isBlank()) "Seri No Yok" else job.seriNo}) cihazına ait servis onarım kaydı arşivden tamamen silinecektir. Bu işlem geri alınamaz!",
+            onConfirm = {
+                viewModel.deleteServisKaydi(job)
+                showDeleteConfirm = false
+            },
+            onDismiss = {
+                showDeleteConfirm = false
+            }
+        )
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Header: Device Info & Delivered Badging Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1.2f)
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(SuccessGreen.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Smartphone,
+                            contentDescription = "Cihaz",
+                            tint = SuccessGreen,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = job.cihazMarkaModel,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Teslim: ${job.tarih.formatDate()}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                // Quick actions row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // Quick Edit
+                    IconButton(
+                        onClick = { showEditDialog = true },
+                        modifier = Modifier.size(32.dp).background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Edit,
+                            contentDescription = "Düzenle",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+
+                    // Quick Status Update
+                    Box {
+                        IconButton(
+                            onClick = { showQuickStatusMenu = true },
+                            modifier = Modifier.size(32.dp).background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f), CircleShape)
                         ) {
-                            Column {
-                                Text(
-                                    text = "${job.cihazMarkaModel} - ${job.cariIsim}",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Tarih: ${job.tarih.formatDate()}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.Gray
-                                )
-                            }
-                            
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(SuccessGreen.copy(alpha = 0.15f))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Text("TESLİM EDİLDİ", color = SuccessGreen, fontWeight = FontWeight.Bold, fontSize = 10.sp)
-                            }
+                            Icon(
+                                imageVector = Icons.Filled.PublishedWithChanges,
+                                contentDescription = "Durum Güncelle",
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(15.dp)
+                            )
                         }
-                        
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(text = "Yapılan İşlem: ${job.sikayetDetayi}", style = MaterialTheme.typography.bodySmall)
-                        if (job.servisNotu.isNotBlank()) {
-                            Text(text = "Teknisyen Notu: ${job.servisNotu}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                        }
-                        
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Toplam Tahsilat: ${job.tahminiTutar.formatTL()}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                            IconButton(onClick = { viewModel.deleteServisKaydi(job) }, modifier = Modifier.size(24.dp)) {
-                                Icon(Icons.Filled.Delete, contentDescription = "Arşivi Sil", tint = ErrorRed, modifier = Modifier.size(16.dp))
+
+                        DropdownMenu(
+                            expanded = showQuickStatusMenu,
+                            onDismissRequest = { showQuickStatusMenu = false },
+                            modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+                        ) {
+                            val statuses = listOf("Bekliyor", "Tamirde", "Parça Bekliyor", "Testte", "Hazır", "Teslim Edildi")
+                            statuses.forEach { targetStatus ->
+                                val optColor = when (targetStatus) {
+                                    "Bekliyor" -> PendingYellow
+                                    "Tamirde" -> BlueText
+                                    "Parça Bekliyor" -> AccentOrange
+                                    "Testte" -> Color(0xFF9B59B6)
+                                    "Hazır" -> PrimaryTeal
+                                    else -> SuccessGreen
+                                }
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(optColor)
+                                            )
+                                            Text(
+                                                text = targetStatus,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (job.durum == targetStatus) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (job.durum == targetStatus) optColor else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        showQuickStatusMenu = false
+                                        viewModel.updateServisDurum(job, targetStatus)
+                                    }
+                                )
                             }
                         }
                     }
+
+                    // Compact Delivered Badge
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(SuccessGreen.copy(alpha = 0.12f))
+                            .border(BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.5f)), RoundedCornerShape(20.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(SuccessGreen)
+                            )
+                            Text(
+                                text = "TESLİM EDİLDİ",
+                                color = SuccessGreen,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
+            }
+
+            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
+
+            // Customer Name & Serial Display Group
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Person,
+                        contentDescription = "Müşteri",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = job.cariIsim,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (job.seriNo.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.QrCodeScanner,
+                            contentDescription = "Seri No",
+                            tint = Color.Gray,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = job.seriNo,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.Gray,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            // Symptom / Fault Box
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Yapılan İşlem",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = job.sikayetDetayi,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Technician note display (Conditional)
+            if (job.servisNotu.isNotBlank()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Filled.Build, contentDescription = null, modifier = Modifier.size(14.dp), tint = SuccessGreen)
+                            Text(
+                                text = "Teknisyen Onarım Raporu",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = SuccessGreen
+                            )
+                        }
+                        Text(
+                            text = job.servisNotu,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
+            // Bottom actions row (Billing, Delete)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.CheckCircle,
+                        contentDescription = "Ödeme Alındı",
+                        tint = SuccessGreen,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column {
+                        Text(text = "Toplam Tahsil Edilen", style = MaterialTheme.typography.labelSmall, color = Color.Gray, fontWeight = FontWeight.Medium)
+                        Text(
+                            text = job.tahminiTutar.formatTL(),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = SuccessGreen
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = { showDeleteConfirm = true },
+                    modifier = Modifier
+                        .size(38.dp)
+                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Arşivi Sil", tint = ErrorRed, modifier = Modifier.size(18.dp))
                 }
             }
         }
@@ -1313,6 +2513,9 @@ fun ActiveJobItemCard(job: ServisKayit, viewModel: ErpViewModel) {
     var noteInput by remember { mutableStateOf(job.servisNotu) }
     var showNotEditingBlock by remember { mutableStateOf(false) }
     var showReceiptDialog by remember { mutableStateOf(false) }
+    var showEditDialog by remember { mutableStateOf(false) }
+    var showQuickStatusMenu by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
 
     if (showReceiptDialog) {
         ReceiptPrintDialog(
@@ -1322,122 +2525,504 @@ fun ActiveJobItemCard(job: ServisKayit, viewModel: ErpViewModel) {
         )
     }
 
+    if (showEditDialog) {
+        EditServisDialog(
+            job = job,
+            onDismiss = { showEditDialog = false },
+            viewModel = viewModel
+        )
+    }
+
+    if (showDeleteConfirm) {
+        DeleteConfirmationDialog(
+            title = "Onarım Kaydını Sil",
+            message = "${job.cihazMarkaModel} (${if (job.seriNo.isBlank()) "Seri No Yok" else job.seriNo}) cihazının aktif onarım takibi kaydı tamamen silinecektir. Bu işlem geri alınamaz!",
+            onConfirm = {
+                viewModel.deleteServisKaydi(job)
+                showDeleteConfirm = false
+            },
+            onDismiss = {
+                showDeleteConfirm = false
+            }
+        )
+    }
+
+    // Repair statuses coloring
+    val statusColor = when (job.durum) {
+        "Bekliyor" -> PendingYellow
+        "Tamirde" -> BlueText
+        "Parça Bekliyor" -> AccentOrange
+        "Testte" -> Color(0xFF9B59B6)
+        "Hazır" -> PrimaryTeal
+        else -> SuccessGreen
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Repair statuses coloring
-            val statusColor = when (job.durum) {
-                "Bekliyor" -> PendingYellow
-                "Tamirde" -> BlueText
-                "Parça Bekliyor" -> AccentOrange
-                "Testte" -> Color(0xFF9B59B6)
-                "Hazır" -> PrimaryTeal
-                else -> SuccessGreen
-            }
-
+            // Header: Device Info & Status Badging Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 8.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1.2f)
                 ) {
-                    Text(
-                        text = job.cihazMarkaModel,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "Müşteri: ${job.cariIsim}",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(statusColor.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Smartphone,
+                            contentDescription = "Cihaz",
+                            tint = statusColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = job.cihazMarkaModel,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.testTag("device_title")
+                        )
+                        Text(
+                            text = "Kayıt: ${job.tarih.formatDate()}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
                 }
 
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(statusColor.copy(alpha = 0.15f))
-                        .border(BorderStroke(1.dp, statusColor.copy(alpha = 0.4f)), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    contentAlignment = Alignment.Center
+                // Quick actions row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = job.durum.uppercase(),
-                        color = statusColor,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        softWrap = false
-                    )
+                    // Quick Edit
+                    IconButton(
+                        onClick = { showEditDialog = true },
+                        modifier = Modifier.size(32.dp).background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Edit,
+                            contentDescription = "Düzenle",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+
+                    // Quick Status Update
+                    Box {
+                        IconButton(
+                            onClick = { showQuickStatusMenu = true },
+                            modifier = Modifier.size(32.dp).background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.PublishedWithChanges,
+                                contentDescription = "Durum Güncelle",
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showQuickStatusMenu,
+                            onDismissRequest = { showQuickStatusMenu = false },
+                            modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+                        ) {
+                            val statuses = listOf("Bekliyor", "Tamirde", "Parça Bekliyor", "Testte", "Hazır", "Teslim Edildi")
+                            statuses.forEach { targetStatus ->
+                                val optColor = when (targetStatus) {
+                                    "Bekliyor" -> PendingYellow
+                                    "Tamirde" -> BlueText
+                                    "Parça Bekliyor" -> AccentOrange
+                                    "Testte" -> Color(0xFF9B59B6)
+                                    "Hazır" -> PrimaryTeal
+                                    else -> SuccessGreen
+                                }
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(optColor)
+                                            )
+                                            Text(
+                                                text = targetStatus,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (job.durum == targetStatus) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (job.durum == targetStatus) optColor else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        showQuickStatusMenu = false
+                                        viewModel.updateServisDurum(job, targetStatus)
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // Modern Glowing Status Badge
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(statusColor.copy(alpha = 0.12f))
+                            .border(BorderStroke(1.dp, statusColor.copy(alpha = 0.5f)), RoundedCornerShape(20.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(statusColor)
+                            )
+                            Text(
+                                text = job.durum.uppercase(),
+                                color = statusColor,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
                 }
             }
 
-            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
 
-            TableRowLabel(label = "Kayıt Tarihi:", value = job.tarih.formatDate())
-            TableRowLabel(label = "Seri / IMEI:", value = job.seriNo.ifBlank { "Mevcut Değil" })
-            TableRowLabel(label = "Arıza Tanımı:", value = job.sikayetDetayi)
+            // Customer Name & Serial Display Group
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Person,
+                        contentDescription = "Müşteri",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = job.cariIsim,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
-            if (job.durum == "Teslim Edildi") {
+                if (job.seriNo.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.QrCodeScanner,
+                            contentDescription = "Seri No",
+                            tint = Color.Gray,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = job.seriNo,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.Gray,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            // Warranty Block (Conditional)
+            if (job.durum == "Teslim Edildi" || job.durum == "Eski Kayıt") {
                 val warrantyDurationMs = 180L * 24 * 60 * 60 * 1000 // 180 gün (6 ay)
                 val remainingMs = (job.tarih + warrantyDurationMs) - System.currentTimeMillis()
                 val remainingDays = remainingMs / (1000 * 60 * 60 * 24)
                 val warrantyText = if (remainingDays > 0) {
-                    "Garanti Aktif: $remainingDays gün kaldı"
+                    "Garanti Sürüyor: $remainingDays gün kaldı"
                 } else {
                     "Garanti Süresi Dolan Cihaz"
                 }
-                TableRowLabel(
-                    label = "Garanti Bitiş:",
-                    value = "🛡️ $warrantyText (Bitiş: %s)".format((job.tarih + warrantyDurationMs).formatDate())
-                )
+                val warrantyColor = if (remainingDays > 0) SuccessGreen else Color.Gray
+
+                Card(
+                     modifier = Modifier.fillMaxWidth(),
+                     colors = CardDefaults.cardColors(containerColor = warrantyColor.copy(alpha = 0.08f)),
+                     border = BorderStroke(1.dp, warrantyColor.copy(alpha = 0.25f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = warrantyColor, modifier = Modifier.size(14.dp))
+                        Text(
+                            text = "🛡️ $warrantyText (Bitiş: ${(job.tarih + warrantyDurationMs).formatDate()})",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = warrantyColor
+                        )
+                    }
+                }
             }
 
-            if (job.durum == "Hazır") {
-                val templateText = "Sayın ${job.cariIsim}, ${job.cihazMarkaModel} cihazınızın onarımı tamamlanmıştır. Toplam Tutar: ${job.tahminiTutar.formatTL()}. İyi günler dileriz - BaranTech Bilişim"
-                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
-                val annotatedString = androidx.compose.ui.text.buildAnnotatedString { append(templateText) }
-                
+            // Symptom / Fault Box (High Visibility)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.ReportProblem,
+                            contentDescription = "Arıza",
+                            tint = AccentOrange,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = "Arıza / Müşteri Şikayeti",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = AccentOrange
+                        )
+                    }
+                    Text(
+                        text = job.sikayetDetayi,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Financial Overview Mini Dashboard
+            Row(
+                 modifier = Modifier.fillMaxWidth(),
+                 horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Left: Alınan Kapora
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                    modifier = Modifier.weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(10.dp)
                 ) {
                     Column(
-                        modifier = Modifier.padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        modifier = Modifier.padding(8.dp).fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(text = "Kapora", style = MaterialTheme.typography.labelSmall, color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = job.alinanKapora.formatTL(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (job.alinanKapora > 0) SuccessGreen else Color.Gray,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // Middle: Kalan Ödeme
+                val remainingAmount = job.tahminiTutar - job.alinanKapora
+                Card(
+                    modifier = Modifier.weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(8.dp).fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(text = "Kalan", style = MaterialTheme.typography.labelSmall, color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = remainingAmount.formatTL(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Black,
+                            color = if (remainingAmount > 0) ErrorRed else SuccessGreen,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // Right: Toplam
+                Card(
+                    modifier = Modifier.weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(8.dp).fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(text = "Toplam", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = job.tahminiTutar.formatTL(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
+            // Technician notes editor or display
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f)),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Filled.Sms, contentDescription = "SMS", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Filled.Build, contentDescription = "Onarım Notu", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
                             Text(
-                                text = "Hızlı WhatsApp / SMS Şablonu",
-                                style = MaterialTheme.typography.labelSmall,
+                                text = "Teknisyen Onarım Raporu",
+                                style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        
+                        IconButton(onClick = { showNotEditingBlock = !showNotEditingBlock }, modifier = Modifier.size(24.dp)) {
+                            Icon(
+                                imageVector = if (showNotEditingBlock) Icons.Filled.Close else Icons.Filled.Edit,
+                                contentDescription = "Onarım Notu Düzenle",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                    }
+
+                    if (showNotEditingBlock) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = noteInput,
+                                onValueChange = { noteInput = it },
+                                placeholder = { Text("Parça değişimi, yapılan testler ve onarım detayları...") },
+                                modifier = Modifier.weight(1f),
+                                textStyle = MaterialTheme.typography.bodySmall,
+                                singleLine = true
+                            )
+                            Button(
+                                onClick = {
+                                    viewModel.updateServisNotu(job, noteInput)
+                                    showNotEditingBlock = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                modifier = Modifier.height(38.dp),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Kaydet", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = if (job.servisNotu.isBlank()) "Henüz teknisyen notu girilmemiş." else job.servisNotu,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (job.servisNotu.isBlank()) Color.Gray else MaterialTheme.colorScheme.onSurface,
+                            fontStyle = if (job.servisNotu.isBlank()) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal
+                        )
+                    }
+                }
+            }
+
+            // WhatsApp template panel (Conditional)
+            if (job.durum == "Hazır") {
+                val templateText = "Sayın ${job.cariIsim}, ${job.cihazMarkaModel} cihazınızın onarımı tamamlanmıştır. Toplam Tutar: ${job.tahminiTutar.formatTL()}. İyi günler dileriz - BaranTech Bilişim"
+                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                val annotatedString = androidx.compose.ui.text.buildAnnotatedString { append(templateText) }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SuccessGreen.copy(alpha = 0.08f)),
+                    border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.25f)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Filled.Sms, contentDescription = "SMS", tint = SuccessGreen, modifier = Modifier.size(16.dp))
+                            Text(
+                                text = "Müşteri Bilgilendir - WhatsApp Şablonu",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = SuccessGreen
                             )
                         }
                         Text(
                             text = templateText,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1446,27 +3031,29 @@ fun ActiveJobItemCard(job: ServisKayit, viewModel: ErpViewModel) {
                             Button(
                                 onClick = {
                                     clipboardManager.setText(annotatedString)
-                                    viewModel.updateServisDurum(job, "Hazır")
+                                    viewModel.triggerBarcodeScanNotification("📋 Bilgilendirme metni başarıyla kopyalandı!")
                                 },
-                                modifier = Modifier.weight(1f).height(32.dp),
+                                modifier = Modifier.weight(1f).height(36.dp),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryTeal)
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy Item", modifier = Modifier.size(14.dp))
+                                Icon(Icons.Filled.ContentCopy, contentDescription = "Kopyala", modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Şablonu Kopyala", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
-                            
+
                             Button(
                                 onClick = {
                                     clipboardManager.setText(annotatedString)
-                                    viewModel.updateServisDurum(job, "Hazır")
+                                    viewModel.triggerBarcodeScanNotification("💬 WhatsApp Entegrasyonu: Müşteriye WhatsApp mesajı göndermek üzere tarayıcı yönlendiriliyor...")
                                 },
-                                modifier = Modifier.weight(1f).height(32.dp),
+                                modifier = Modifier.weight(1f).height(36.dp),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
+                                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Icon(Icons.Filled.Share, contentDescription = "Share Item", modifier = Modifier.size(14.dp))
+                                Icon(Icons.Filled.Share, contentDescription = "WhatsApp Gönder", modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("WhatsApp Gönder", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
@@ -1474,105 +3061,102 @@ fun ActiveJobItemCard(job: ServisKayit, viewModel: ErpViewModel) {
                     }
                 }
             }
-            
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.weight(1f)) {
-                    TableRowLabel(label = "Alınan Kapora:", value = job.alinanKapora.formatTL())
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    TableRowLabel(label = "Kalan Ödeme:", value = (job.tahminiTutar - job.alinanKapora).formatTL())
-                }
-            }
 
-            // Servis notu ekleme alanı
-            if (showNotEditingBlock) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OutlinedTextField(
-                        value = noteInput,
-                        onValueChange = { noteInput = it },
-                        label = { Text("Teknisyen Onarım Notu") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                    Button(
-                        onClick = {
-                            viewModel.updateServisNotu(job, noteInput)
-                            showNotEditingBlock = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
+            // Interactive Modern Status Update Segment
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Onarım Aşamasını Güncelle:",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+
+                var expandedStatusDropdown by remember { mutableStateOf(false) }
+
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { expandedStatusDropdown = true },
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = statusColor),
+                        border = BorderStroke(1.dp, statusColor.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(10.dp)
                     ) {
-                        Text("Kaydet")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(16.dp), tint = statusColor)
+                            Text(
+                                text = "AŞAMA: ${job.durum.uppercase()}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = statusColor
+                            )
+                            Icon(Icons.Filled.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp), tint = statusColor)
+                        }
                     }
-                }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Teknisyen Notu: " + (job.servisNotu.ifBlank { "Henüz teknisyen notu girilmemiş." }),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (job.servisNotu.isBlank()) Color.Gray else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = { showNotEditingBlock = true }) {
-                        Icon(Icons.Filled.Edit, contentDescription = "EditNot", modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Düzenle", fontSize = 11.sp)
+
+                    DropdownMenu(
+                        expanded = expandedStatusDropdown,
+                        onDismissRequest = { expandedStatusDropdown = false },
+                        modifier = Modifier.fillMaxWidth(0.85f).background(MaterialTheme.colorScheme.surface)
+                    ) {
+                        val statuses = listOf("Bekliyor", "Tamirde", "Parça Bekliyor", "Testte", "Hazır", "Teslim Edildi")
+                        statuses.forEach { targetStatus ->
+                            val optColor = when (targetStatus) {
+                                "Bekliyor" -> PendingYellow
+                                "Tamirde" -> BlueText
+                                "Parça Bekliyor" -> AccentOrange
+                                "Testte" -> Color(0xFF9B59B6)
+                                "Hazır" -> PrimaryTeal
+                                else -> SuccessGreen
+                            }
+                            DropdownMenuItem(
+                                text = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(optColor)
+                                        )
+                                        Text(
+                                            text = targetStatus,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (job.durum == targetStatus) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (job.durum == targetStatus) optColor else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    expandedStatusDropdown = false
+                                    viewModel.updateServisDurum(job, targetStatus)
+                                    
+                                    // On final delivered billing, we automatically register a financial income transaction!
+                                    if (targetStatus == "Teslim Edildi") {
+                                        val remainingCash = job.tahminiTutar - job.alinanKapora
+                                        if (remainingCash > 0.0) {
+                                            viewModel.addKasaBanka(
+                                                tipi = "Gelir",
+                                                tutar = remainingCash,
+                                                aciklama = "${job.cariIsim} - ${job.cihazMarkaModel} Kalan Bakiye Tahsilatı",
+                                                odeme = "Nakit"
+                                            )
+                                        }
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(2.dp))
 
-            // Durum Gelişim Bar Butonları
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Cihaz Durumunu Güncelle (Canlı Firestore Sync Tetikler):", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = Color.Gray)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    val statuses = listOf("Tamirde", "Parça Bekliyor", "Testte", "Hazır", "Teslim Edildi")
-                    statuses.forEach { targetStatus ->
-                        TextButton(
-                            onClick = {
-                                viewModel.updateServisDurum(job, targetStatus)
-                                
-                                // On final delivered billing, we automatically register a financial income transaction!
-                                if (targetStatus == "Teslim Edildi") {
-                                    val remainingCash = job.tahminiTutar - job.alinanKapora
-                                    if (remainingCash > 0.0) {
-                                        viewModel.addKasaBanka(
-                                            tipi = "Gelir",
-                                            tutar = remainingCash,
-                                            aciklama = "${job.cariIsim} - ${job.cihazMarkaModel} Kalan Bakiye Tahsilatı",
-                                            odeme = "Nakit"
-                                        )
-                                    }
-                                }
-                            },
-                            colors = ButtonDefaults.textButtonColors(
-                                containerColor = if (job.durum == targetStatus) statusColor.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceVariant
-                            ),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = targetStatus,
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (job.durum == targetStatus) statusColor else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(4.dp))
+            // Bottom actions row (Print Fiş, Archive Delete)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1580,14 +3164,253 @@ fun ActiveJobItemCard(job: ServisKayit, viewModel: ErpViewModel) {
             ) {
                 Button(
                     onClick = { showReceiptDialog = true },
-                    modifier = Modifier.weight(1f).height(38.dp),
+                    modifier = Modifier.weight(1f).height(40.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                    shape = RoundedCornerShape(8.dp)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    shape = RoundedCornerShape(10.dp)
                 ) {
                     Icon(Icons.Filled.Print, contentDescription = "Fiş Yazdır", modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Teknik Servis Teslim Fişi Yazdır (80mm)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Fiş Yazdır (80mm)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+
+                IconButton(
+                    onClick = { showDeleteConfirm = true },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Arşivi Sil", tint = ErrorRed, modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EditServisDialog(
+    job: ServisKayit,
+    onDismiss: () -> Unit,
+    viewModel: ErpViewModel
+) {
+    val allCariList by viewModel.cariList.collectAsState()
+
+    var selectedCariId by remember { mutableStateOf(job.cariId) }
+    var selectedCariName by remember { mutableStateOf(job.cariIsim) }
+    var searchCariQuery by remember { mutableStateOf(job.cariIsim) }
+    var expandedCariDropdown by remember { mutableStateOf(false) }
+
+    var cihazMarkaModel by remember { mutableStateOf(job.cihazMarkaModel) }
+    var seriNo by remember { mutableStateOf(job.seriNo) }
+    var sikayetDetayi by remember { mutableStateOf(job.sikayetDetayi) }
+    var alinanKaporaStr by remember { mutableStateOf(job.alinanKapora.toString()) }
+    var tahminiTutarStr by remember { mutableStateOf(job.tahminiTutar.toString()) }
+    var selectedStatus by remember { mutableStateOf(job.durum) }
+    var expandedStatusDropdown by remember { mutableStateOf(false) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Kaydı Düzenle",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Filled.Close, contentDescription = "Kapat")
+                    }
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
+
+                // Cari Seçimi
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = if (selectedCariId != -1) selectedCariName else searchCariQuery,
+                        onValueChange = {
+                            searchCariQuery = it
+                            selectedCariId = -1
+                            expandedCariDropdown = true
+                        },
+                        label = { Text("Cari Müşteri Seçimi") },
+                        trailingIcon = {
+                            IconButton(onClick = { expandedCariDropdown = !expandedCariDropdown }) {
+                                Icon(Icons.Filled.ArrowDropDown, contentDescription = "Aç")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    DropdownMenu(
+                        expanded = expandedCariDropdown,
+                        onDismissRequest = { expandedCariDropdown = false },
+                        modifier = Modifier.fillMaxWidth(0.8f)
+                    ) {
+                        val searchableList = allCariList.filter {
+                            it.adSoyadFirma.lowercase().contains(searchCariQuery.lowercase())
+                        }
+                        if (searchableList.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("Müşteri bulunamadı!") },
+                                onClick = { expandedCariDropdown = false }
+                            )
+                        } else {
+                            searchableList.take(5).forEach { client ->
+                                DropdownMenuItem(
+                                    text = { Text("${client.adSoyadFirma} (${client.telefon})") },
+                                    onClick = {
+                                        selectedCariId = client.id
+                                        selectedCariName = client.adSoyadFirma
+                                        searchCariQuery = client.adSoyadFirma
+                                        expandedCariDropdown = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Cihaz Bilgisi
+                OutlinedTextField(
+                    value = cihazMarkaModel,
+                    onValueChange = { cihazMarkaModel = it },
+                    label = { Text("Cihaz Marka/Model *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = seriNo,
+                    onValueChange = { seriNo = it },
+                    label = { Text("Seri No / IMEI") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = sikayetDetayi,
+                    onValueChange = { sikayetDetayi = it },
+                    label = { Text("Arıza / Şikayet Detayı *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 4
+                )
+
+                // Finansalları
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = alinanKaporaStr,
+                        onValueChange = { alinanKaporaStr = it },
+                        label = { Text("Alınan Kapora (TL)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = tahminiTutarStr,
+                        onValueChange = { tahminiTutarStr = it },
+                        label = { Text("Tahmini Tutar (TL)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                }
+
+                // Status dropdown
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = selectedStatus,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Aşama/Durum") },
+                        trailingIcon = {
+                            IconButton(onClick = { expandedStatusDropdown = true }) {
+                                Icon(Icons.Filled.ArrowDropDown, contentDescription = "Aç")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().clickable { expandedStatusDropdown = true }
+                    )
+
+                    DropdownMenu(
+                        expanded = expandedStatusDropdown,
+                        onDismissRequest = { expandedStatusDropdown = false },
+                        modifier = Modifier.fillMaxWidth(0.8f)
+                    ) {
+                        val statuses = listOf("Bekliyor", "Tamirde", "Parça Bekliyor", "Testte", "Hazır", "Teslim Edildi")
+                        statuses.forEach { st ->
+                            DropdownMenuItem(
+                                text = { Text(st) },
+                                onClick = {
+                                    selectedStatus = st
+                                    expandedStatusDropdown = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f).height(46.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Vazgeç")
+                    }
+
+                    Button(
+                        onClick = {
+                            if (cihazMarkaModel.isNotBlank() && sikayetDetayi.isNotBlank() && selectedCariId != -1) {
+                                val kapora = alinanKaporaStr.toDoubleOrNull() ?: 0.0
+                                val tutar = tahminiTutarStr.toDoubleOrNull() ?: 0.0
+                                val updatedJob = job.copy(
+                                    cariId = selectedCariId,
+                                    cariIsim = selectedCariName,
+                                    cihazMarkaModel = cihazMarkaModel.trim(),
+                                    seriNo = seriNo.trim(),
+                                    sikayetDetayi = sikayetDetayi.trim(),
+                                    alinanKapora = kapora,
+                                    tahminiTutar = tutar,
+                                    durum = selectedStatus
+                                )
+                                viewModel.updateServisRecord(updatedJob)
+                                onDismiss()
+                            }
+                        },
+                        enabled = cihazMarkaModel.isNotBlank() && sikayetDetayi.isNotBlank() && selectedCariId != -1,
+                        modifier = Modifier.weight(1.5f).height(46.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
+                    ) {
+                        Text("Değişiklikleri Kaydet", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -1738,6 +3561,7 @@ fun ReceiptPrintDialog(
 @Composable
 fun IslemScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
     val islemList by viewModel.islemList.collectAsState()
+    var itemToDelete by remember { mutableStateOf<com.example.data.model.IslemTuru?>(null) }
 
     var aciklama by remember { mutableStateOf("") }
     var sabitUcretStr by remember { mutableStateOf("") }
@@ -1876,7 +3700,7 @@ fun IslemScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             IconButton(
-                                onClick = { viewModel.deleteIslemTuru(task) },
+                                onClick = { itemToDelete = task },
                                 modifier = Modifier.size(32.dp)
                             ) {
                                 Icon(Icons.Filled.Delete, contentDescription = "Sil", tint = ErrorRed, modifier = Modifier.size(16.dp))
@@ -1887,6 +3711,20 @@ fun IslemScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
             }
         }
     }
+
+    itemToDelete?.let { task ->
+        DeleteConfirmationDialog(
+            title = "Katalog İşlemini Sil",
+            message = "${task.aciklama} isimli standart işlem katalogtan tamamen kaldırılacaktır. Onaylıyor musunuz?",
+            onConfirm = {
+                viewModel.deleteIslemTuru(task)
+                itemToDelete = null
+            },
+            onDismiss = {
+                itemToDelete = null
+            }
+        )
+    }
 }
 
 
@@ -1895,6 +3733,7 @@ fun IslemScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
 fun StokScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
     val stokList by viewModel.stokList.collectAsState()
     val rawAlerts by viewModel.criticalStockAlerts.collectAsState()
+    var itemToDelete by remember { mutableStateOf<com.example.data.model.StokParca?>(null) }
 
     var showAddStokForm by remember { mutableStateOf(false) }
 
@@ -2119,102 +3958,301 @@ fun StokScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
             }
         } else {
             items(stokList) { item ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, if (item.adet < 3) AccentOrange.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline)
+                StokItemCard(item = item, viewModel = viewModel)
+            }
+        }
+    }
+}
+
+@Composable
+fun StokItemCard(item: StokParca, viewModel: ErpViewModel) {
+    var showEditDialog by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    if (showEditDialog) {
+        EditStokDialog(
+            item = item,
+            onDismiss = { showEditDialog = false },
+            viewModel = viewModel
+        )
+    }
+
+    if (showDeleteConfirm) {
+        DeleteConfirmationDialog(
+            title = "Yedek Parça Sil",
+            message = "${item.parcaAdi} isimli yedek parça stok veri tabanından kalıcı olarak silinecektir. Bu işlem geri alınamaz!",
+            onConfirm = {
+                viewModel.deleteStokParca(item)
+                showDeleteConfirm = false
+            },
+            onDismiss = {
+                showDeleteConfirm = false
+            }
+        )
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, if (item.adet < 3) AccentOrange.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = item.parcaAdi,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Marka: ${item.marka} | Tedarikçi: ${item.tedarikciIsim}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
+
+                // Stepper Qty with ripple feedbacks
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = item.parcaAdi,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Bold
+                    IconButton(
+                        onClick = { viewModel.updateStokAdet(item, item.adet - 1) },
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Icon(Icons.Filled.Remove, contentDescription = "Azalt", modifier = Modifier.size(16.dp))
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .width(36.dp)
+                            .height(32.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(
+                                if (item.adet < 3) AccentOrange.copy(alpha = 0.2f)
+                                else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = item.adet.toString(),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 14.sp,
+                            color = if (item.adet < 3) AccentOrange else MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.updateStokAdet(item, item.adet + 1) },
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = "Artir", modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+
+            Divider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Column {
+                        Text("Alış Fiyatı", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(item.alisFiyati.formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                    }
+                    Column {
+                        Text("Satış Fiyatı", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(item.satisFiyati.formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = SuccessGreen)
+                    }
+                    Column {
+                        Text("Potansiyel Kar", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text(((item.satisFiyati - item.alisFiyati) * item.adet).formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    IconButton(
+                        onClick = { showEditDialog = true },
+                        modifier = Modifier
+                            .size(28.dp)
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                    ) {
+                        Icon(Icons.Filled.Edit, contentDescription = "Düzenle", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(15.dp))
+                    }
+                    IconButton(
+                        onClick = { showDeleteConfirm = true },
+                        modifier = Modifier
+                            .size(28.dp)
+                            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                    ) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Sil", tint = ErrorRed, modifier = Modifier.size(15.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EditStokDialog(
+    item: StokParca,
+    onDismiss: () -> Unit,
+    viewModel: ErpViewModel
+) {
+    var parcaAdi by remember { mutableStateOf(item.parcaAdi) }
+    var marka by remember { mutableStateOf(item.marka) }
+    var adetStr by remember { mutableStateOf(item.adet.toString()) }
+    var alisFiyatiStr by remember { mutableStateOf(item.alisFiyati.toString()) }
+    var satisFiyatiStr by remember { mutableStateOf(item.satisFiyati.toString()) }
+    var tedarikciIsim by remember { mutableStateOf(item.tedarikciIsim) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Stok Kaydını Düzenle",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Filled.Close, contentDescription = "Kapat")
+                    }
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.08f))
+
+                OutlinedTextField(
+                    value = parcaAdi,
+                    onValueChange = { parcaAdi = it },
+                    label = { Text("Yedek Parça Adı *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = marka,
+                        onValueChange = { marka = it },
+                        label = { Text("Marka / Üretici *") },
+                        modifier = Modifier.weight(1.2f),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = adetStr,
+                        onValueChange = { adetStr = it },
+                        label = { Text("Stok Adet *") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(0.8f),
+                        singleLine = true
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = alisFiyatiStr,
+                        onValueChange = { alisFiyatiStr = it },
+                        label = { Text("Birim Alış (TL)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1.2f),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = satisFiyatiStr,
+                        onValueChange = { satisFiyatiStr = it },
+                        label = { Text("Birim Satış (TL)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1.2f),
+                        singleLine = true
+                    )
+                }
+
+                OutlinedTextField(
+                    value = tedarikciIsim,
+                    onValueChange = { tedarikciIsim = it },
+                    label = { Text("Toptancı / Tedarikçi Firma *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f).height(46.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Vazgeç")
+                    }
+
+                    Button(
+                        onClick = {
+                            if (parcaAdi.isNotBlank() && marka.isNotBlank() && tedarikciIsim.isNotBlank()) {
+                                val count = adetStr.toIntOrNull() ?: 0
+                                val buy = alisFiyatiStr.toDoubleOrNull() ?: 0.0
+                                val sell = satisFiyatiStr.toDoubleOrNull() ?: 0.0
+                                val updated = item.copy(
+                                    parcaAdi = parcaAdi.trim(),
+                                    marka = marka.trim(),
+                                    adet = count,
+                                    alisFiyati = buy,
+                                    satisFiyati = sell,
+                                    tedarikciIsim = tedarikciIsim.trim()
                                 )
-                                Text(
-                                    text = "Marka: ${item.marka} | Tedarikçi: ${item.tedarikciIsim}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.Gray
-                                )
+                                viewModel.updateStokRecord(updated)
+                                onDismiss()
                             }
-
-                            // Stepper Qty with ripple feedbacks
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                IconButton(
-                                    onClick = { viewModel.updateStokAdet(item, item.adet - 1) },
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                                ) {
-                                    Icon(Icons.Filled.Remove, contentDescription = "Azalt", modifier = Modifier.size(16.dp))
-                                }
-
-                                Box(
-                                    modifier = Modifier
-                                        .width(36.dp)
-                                        .height(32.dp)
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(
-                                            if (item.adet < 3) AccentOrange.copy(alpha = 0.2f)
-                                            else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = item.adet.toString(),
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 14.sp,
-                                        color = if (item.adet < 3) AccentOrange else MaterialTheme.colorScheme.primary
-                                    )
-                                }
-
-                                IconButton(
-                                    onClick = { viewModel.updateStokAdet(item, item.adet + 1) },
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                                ) {
-                                    Icon(Icons.Filled.Add, contentDescription = "Artir", modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-
-                        Divider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                Column {
-                                    Text("Alış Fiyatı", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                                    Text(item.alisFiyati.formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                                }
-                                Column {
-                                    Text("Satış Fiyatı", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                                    Text(item.satisFiyati.formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = SuccessGreen)
-                                }
-                                Column {
-                                    Text("Potansiyel Kar", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                                    Text(((item.satisFiyati - item.alisFiyati) * item.adet).formatTL(), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                }
-                            }
-
-                            IconButton(onClick = { viewModel.deleteStokParca(item) }, modifier = Modifier.size(24.dp)) {
-                                Icon(Icons.Filled.Delete, contentDescription = "Sil", tint = ErrorRed, modifier = Modifier.size(18.dp))
-                            }
-                        }
+                        },
+                        enabled = parcaAdi.isNotBlank() && marka.isNotBlank() && tedarikciIsim.isNotBlank(),
+                        modifier = Modifier.weight(1.5f).height(46.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
+                    ) {
+                        Text("Değişiklikleri Kaydet", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -2227,6 +4265,7 @@ fun StokScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
 @Composable
 fun FinansScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
     val finansList by viewModel.finansList.collectAsState()
+    var itemToDelete by remember { mutableStateOf<com.example.data.model.KasaBanka?>(null) }
 
     var showFinansForm by remember { mutableStateOf(false) }
 
@@ -2333,6 +4372,11 @@ fun FinansScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
                     }
                 }
             }
+        }
+
+        // Monthly analytical chart
+        item {
+            MonthlyFinancialBarChart(finansList = finansList)
         }
 
         // Add transaction entry form
@@ -2487,7 +4531,7 @@ fun FinansScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
                             
                             Spacer(modifier = Modifier.width(10.dp))
                             
-                            Column {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(
                                     text = entry.aciklama,
                                     style = MaterialTheme.typography.bodyMedium,
@@ -2498,32 +4542,41 @@ fun FinansScreen(viewModel: ErpViewModel, modifier: Modifier = Modifier) {
                                     style = MaterialTheme.typography.bodySmall,
                                     color = Color.Gray
                                 )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = (if (entry.tipi == "Gelir") "+" else "-") + " " + entry.tutar.formatTL(),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (entry.tipi == "Gelir") SuccessGreen else ErrorRed,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                         }
 
-                        Row(
-                            modifier = Modifier.wrapContentWidth(Alignment.End),
-                            verticalAlignment = Alignment.CenterVertically
+                        IconButton(
+                            onClick = { itemToDelete = entry },
+                            modifier = Modifier.size(32.dp)
                         ) {
-                            Text(
-                                text = (if (entry.tipi == "Gelir") "+" else "-") + " " + entry.tutar.formatTL(),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = if (entry.tipi == "Gelir") SuccessGreen else ErrorRed,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            IconButton(
-                                onClick = { viewModel.deleteKasaBanka(entry) },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(Icons.Filled.Delete, contentDescription = "FisSil", tint = ErrorRed, modifier = Modifier.size(16.dp))
-                            }
+                            Icon(Icons.Filled.Delete, contentDescription = "FisSil", tint = ErrorRed, modifier = Modifier.size(16.dp))
                         }
                     }
                 }
             }
         }
+    }
+
+    itemToDelete?.let { entry ->
+        DeleteConfirmationDialog(
+            title = "Finans İşlemini Sil",
+            message = "${entry.aciklama} (${entry.tipi} - ${entry.tutar.formatTL()}) kaydı kasa/banka defterinizden tamamen silinecektir. Bu işlem geri alınamaz!",
+            onConfirm = {
+                viewModel.deleteKasaBanka(entry)
+                itemToDelete = null
+            },
+            onDismiss = {
+                itemToDelete = null
+            }
+        )
     }
 }
